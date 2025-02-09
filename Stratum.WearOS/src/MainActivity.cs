@@ -6,32 +6,27 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Android.App;
-using Android.Content;
 using Android.Gms.Common.Apis;
 using Android.Gms.Wearable;
 using Android.OS;
 using Android.Views;
 using Android.Widget;
 using AndroidX.AppCompat.App;
-using AndroidX.Wear.Tiles;
 using AndroidX.Wear.Widget;
 using AndroidX.Wear.Widget.Drawer;
-using Stratum.Core;
-using Stratum.Core.Generator;
-using Stratum.Core.Util;
+using Java.IO;
+using Newtonsoft.Json;
 using Stratum.Droid.Shared.Util;
 using Stratum.Droid.Shared.Wear;
-using Java.IO;
-using Java.Lang;
-using Newtonsoft.Json;
 using Stratum.WearOS.Cache;
 using Stratum.WearOS.Cache.View;
 using Stratum.WearOS.Comparer;
+using Stratum.WearOS.Fragment;
 using Stratum.WearOS.Interface;
 using Stratum.WearOS.Util;
 using Exception = System.Exception;
 
-namespace Stratum.WearOS.Activity
+namespace Stratum.WearOS
 {
     [Activity(Label = "@string/displayName", MainLauncher = true, Icon = "@mipmap/ic_launcher")]
     public class MainActivity : AppCompatActivity
@@ -48,11 +43,12 @@ namespace Stratum.WearOS.Activity
         private readonly SemaphoreSlim _onCreateLock;
 
         // Views
-        private LinearLayout _offlineLayout;
         private CircularProgressLayout _circularProgressLayout;
-        private RelativeLayout _emptyLayout;
-        private WearableRecyclerView _authList;
+        private LinearLayout _offlineLayout;
         private WearableNavigationDrawerView _categoryList;
+        
+        // Fragments
+        private AuthListFragment _listFragment;
 
         // Data
         private AuthenticatorView _authView;
@@ -65,7 +61,6 @@ namespace Stratum.WearOS.Activity
         private PreferenceWrapper _preferences;
         private bool _preventCategorySelectEvent;
 
-        private AuthenticatorListAdapter _authListAdapter;
         private CategoryListAdapter _categoryListAdapter;
 
         // Connection Status
@@ -97,8 +92,6 @@ namespace Stratum.WearOS.Activity
             base.Dispose(disposing);
         }
 
-        #region Activity Lifecycle
-
         protected override async void OnCreate(Bundle bundle)
         {
             base.OnCreate(bundle);
@@ -118,6 +111,9 @@ namespace Stratum.WearOS.Activity
             var defaultCategory = _preferences.DefaultCategory;
             _authView = new AuthenticatorView(_authCache, defaultCategory, _preferences.SortMode);
             _categoryView = new CategoryView(_categoryCache);
+            
+            _listFragment = new AuthListFragment(_authView, _customIconCache);
+            _listFragment.ItemClicked += OnItemClicked;
 
             RunOnUiThread(delegate
             {
@@ -128,12 +124,17 @@ namespace Stratum.WearOS.Activity
                     ReleaseOnCreateLock();
                     return;
                 }
-
+                
                 AnimUtil.FadeOutView(_circularProgressLayout, AnimUtil.LengthShort, false, delegate
                 {
-                    CheckEmptyState();
-                    ReleaseOnCreateLock();
+                    SupportFragmentManager.BeginTransaction()
+                        .SetReorderingAllowed(true)
+                        .SetCustomAnimations(Resource.Animation.fadein, Resource.Animation.fadeout)
+                        .Replace(Resource.Id.viewFragment, _listFragment)
+                        .Commit();
                 });
+
+                ReleaseOnCreateLock();
             });
         }
 
@@ -167,11 +168,7 @@ namespace Stratum.WearOS.Activity
 
             RunOnUiThread(delegate
             {
-                AnimUtil.FadeOutView(_circularProgressLayout, AnimUtil.LengthShort, false, delegate
-                {
-                    CheckOfflineState();
-                    CheckEmptyState();
-                });
+                AnimUtil.FadeOutView(_circularProgressLayout, AnimUtil.LengthShort, false, CheckOfflineState);
             });
         }
 
@@ -189,31 +186,10 @@ namespace Stratum.WearOS.Activity
             }
         }
 
-        #endregion
-
-        #region Authenticators and Categories
-
         private void InitViews()
         {
             _circularProgressLayout = FindViewById<CircularProgressLayout>(Resource.Id.layoutCircularProgress);
-            _emptyLayout = FindViewById<RelativeLayout>(Resource.Id.layoutEmpty);
             _offlineLayout = FindViewById<LinearLayout>(Resource.Id.layoutOffline);
-
-            _authList = FindViewById<WearableRecyclerView>(Resource.Id.list);
-            _authList.EdgeItemsCenteringEnabled = true;
-            _authList.HasFixedSize = true;
-            _authList.SetItemViewCacheSize(12);
-            _authList.SetItemAnimator(null);
-
-            var layoutCallback = new AuthenticatorListLayoutCallback(this);
-            _authList.SetLayoutManager(new WearableLinearLayoutManager(this, layoutCallback));
-
-            _authListAdapter = new AuthenticatorListAdapter(_authView, _customIconCache, _preferences.ShowUsernames);
-            _authListAdapter.ItemClicked += OnItemClicked;
-            _authListAdapter.ItemLongClicked += OnItemLongClicked;
-            _authListAdapter.HasStableIds = true;
-            _authListAdapter.DefaultAuth = _preferences.DefaultAuth;
-            _authList.SetAdapter(_authListAdapter);
 
             _categoryList = FindViewById<WearableNavigationDrawerView>(Resource.Id.drawerCategories);
             _categoryListAdapter = new CategoryListAdapter(this, _categoryView);
@@ -260,8 +236,58 @@ namespace Stratum.WearOS.Activity
                 _authView.CategoryId = null;
             }
 
-            _authListAdapter.NotifyDataSetChanged();
-            CheckEmptyState();
+            _listFragment.NotifyChanged();
+
+            if (SupportFragmentManager.BackStackEntryCount > 0)
+            {
+                SupportFragmentManager.PopBackStack(); 
+            }
+        }
+        
+        private void OnItemClicked(object sender, int position)
+        {
+            var item = _authView.ElementAtOrDefault(position);
+
+            if (item == null)
+            {
+                return;
+            }
+
+            var bundle = new Bundle();
+            
+            bundle.PutInt("type", (int) item.Type);
+            bundle.PutString("issuer", item.Issuer);
+            bundle.PutString("username", item.Username);
+            bundle.PutString("issuer", item.Issuer);
+            bundle.PutInt("period", item.Period);
+            bundle.PutInt("digits", item.Digits);
+            bundle.PutString("secret", item.Secret);
+            bundle.PutString("pin", item.Pin);
+            bundle.PutInt("algorithm", (int) item.Algorithm);
+            
+            var hasCustomIcon = !string.IsNullOrEmpty(item.Icon) && item.Icon.StartsWith(CustomIconCache.Prefix);
+            bundle.PutBoolean("hasCustomIcon", hasCustomIcon);
+            
+            if (hasCustomIcon)
+            {
+                var id = item.Icon[1..];
+                var bitmap = _customIconCache.GetCachedBitmap(id);
+                bundle.PutParcelable("icon", bitmap);
+            }
+            else
+            {
+                bundle.PutString("icon", item.Icon);
+            }
+            
+            var fragment = new CodeFragment();
+            fragment.Arguments = bundle;
+
+            SupportFragmentManager.BeginTransaction()
+                .SetReorderingAllowed(true)
+                .SetCustomAnimations(Resource.Animation.slidein, Resource.Animation.fadeout)
+                .Add(Resource.Id.viewFragment, fragment)
+                .AddToBackStack(null)
+                .Commit();
         }
 
         private void CheckOfflineState()
@@ -276,113 +302,6 @@ namespace Stratum.WearOS.Activity
                 _offlineLayout.Visibility = ViewStates.Invisible;
             }
         }
-
-        private void CheckEmptyState()
-        {
-            if (!_authView.Any())
-            {
-                _emptyLayout.Visibility = ViewStates.Visible;
-                _authList.Visibility = ViewStates.Invisible;
-            }
-            else
-            {
-                _emptyLayout.Visibility = ViewStates.Invisible;
-                _authList.Visibility = ViewStates.Visible;
-                _authList.RequestFocus();
-            }
-        }
-
-        private void OnItemClicked(object sender, int position)
-        {
-            var item = _authView.ElementAtOrDefault(position);
-
-            if (item == null)
-            {
-                return;
-            }
-
-            if (item.Type.GetGenerationMethod() == GenerationMethod.Counter)
-            {
-                Toast.MakeText(this, Resource.String.hotpNotSupported, ToastLength.Short).Show();
-                return;
-            }
-
-            var intent = new Intent(this, typeof(CodeActivity));
-            var bundle = new Bundle();
-
-            bundle.PutInt("type", (int) item.Type);
-            bundle.PutString("issuer", item.Issuer);
-            bundle.PutString("username", item.Username);
-            bundle.PutString("issuer", item.Issuer);
-            bundle.PutInt("period", item.Period);
-            bundle.PutInt("digits", item.Digits);
-            bundle.PutString("secret", item.Secret);
-            bundle.PutString("pin", item.Pin);
-            bundle.PutInt("algorithm", (int) item.Algorithm);
-
-            var hasCustomIcon = !string.IsNullOrEmpty(item.Icon) && item.Icon.StartsWith(CustomIconCache.Prefix);
-            bundle.PutBoolean("hasCustomIcon", hasCustomIcon);
-
-            if (hasCustomIcon)
-            {
-                var id = item.Icon[1..];
-                var bitmap = _customIconCache.GetCachedBitmap(id);
-                bundle.PutParcelable("icon", bitmap);
-            }
-            else
-            {
-                bundle.PutString("icon", item.Icon);
-            }
-
-            intent.PutExtras(bundle);
-            StartActivity(intent);
-        }
-
-        private void OnItemLongClicked(object sender, int position)
-        {
-            var item = _authView.ElementAtOrDefault(position);
-
-            if (item == null)
-            {
-                return;
-            }
-            
-            if (item.Type.GetGenerationMethod() == GenerationMethod.Counter)
-            {
-                Toast.MakeText(this, Resource.String.hotpNotSupported, ToastLength.Short).Show();
-                return;
-            }
-
-            var oldDefault = _preferences.DefaultAuth;
-            var newDefault = HashUtil.Sha1(item.Secret);
-
-            if (oldDefault == newDefault)
-            {
-                _authListAdapter.DefaultAuth = _preferences.DefaultAuth = null;
-            }
-            else
-            {
-                _authListAdapter.DefaultAuth = _preferences.DefaultAuth = newDefault;
-                _authListAdapter.NotifyItemChanged(position);
-            }
-
-            if (oldDefault != null)
-            {
-                var oldPosition = _authView.FindIndex(a => HashUtil.Sha1(a.Secret) == oldDefault);
-
-                if (oldPosition > -1)
-                {
-                    _authListAdapter.NotifyItemChanged(oldPosition);
-                }
-            }
-
-            var clazz = Class.FromType(typeof(AuthTileService));
-            TileService.GetUpdater(this).RequestUpdate(clazz);
-        }
-
-        #endregion
-
-        #region Message Handling
 
         private async Task FindServerNode()
         {
@@ -425,11 +344,12 @@ namespace Stratum.WearOS.Activity
         private async Task OnSyncBundleReceived(WearSyncBundle bundle)
         {
             var oldSortMode = _preferences.SortMode;
+            var listChanged = false;
 
             if (oldSortMode != bundle.Preferences.SortMode)
             {
                 _authView.SortMode = bundle.Preferences.SortMode;
-                RunOnUiThread(_authListAdapter.NotifyDataSetChanged);
+                listChanged = true;
             }
 
             _preferences.ApplySyncedPreferences(bundle.Preferences);
@@ -438,7 +358,12 @@ namespace Stratum.WearOS.Activity
             {
                 await _authCache.ReplaceAsync(bundle.Authenticators);
                 _authView.Update();
-                RunOnUiThread(_authListAdapter.NotifyDataSetChanged);
+                listChanged = true;
+            }
+
+            if (listChanged)
+            {
+                RunOnUiThread(_listFragment.NotifyChanged);
             }
 
             if (_categoryCache.Dirty(bundle.Categories, new WearCategoryComparer()))
@@ -465,7 +390,5 @@ namespace Stratum.WearOS.Activity
                 await _customIconCache.AddAsync(icon.Id, icon.Data);
             }
         }
-
-        #endregion
     }
 }
