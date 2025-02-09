@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Android.App;
+using Android.Content.PM;
 using Android.Gms.Common.Apis;
 using Android.Gms.Wearable;
 using Android.OS;
@@ -28,7 +29,7 @@ using Exception = System.Exception;
 
 namespace Stratum.WearOS
 {
-    [Activity(Label = "@string/displayName", MainLauncher = true, Icon = "@mipmap/ic_launcher")]
+    [Activity(Label = "@string/displayName", MainLauncher = true, Icon = "@mipmap/ic_launcher", LaunchMode = LaunchMode.SingleInstance)]
     public class MainActivity : AppCompatActivity
     {
         // Query Paths
