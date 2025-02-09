@@ -7,6 +7,7 @@ using Android.OS;
 using Android.Views;
 using Android.Widget;
 using AndroidX.Wear.Widget;
+using Java.Lang;
 using Stratum.Core;
 using Stratum.Core.Generator;
 using Stratum.Core.Util;
@@ -76,10 +77,20 @@ namespace Stratum.WearOS.Fragment
 
             if (hasCustomIcon)
             {
+                Bitmap bitmap;
+                
+                if (Build.VERSION.SdkInt >= BuildVersionCodes.Tiramisu)
+                {
+#pragma warning disable CA1416
+                    bitmap = (Bitmap) Arguments.GetParcelable("icon", Class.FromType(typeof(Bitmap)));
+#pragma warning restore CA1416
+                }
+                else
+                {
 #pragma warning disable CA1422
-                // TODO: Use SDK 33 method
-                var bitmap = (Bitmap) Arguments.GetParcelable("icon");
+                    bitmap = (Bitmap) Arguments.GetParcelable("icon");
 #pragma warning restore CA1422
+                }
 
                 if (bitmap != null)
                 {
